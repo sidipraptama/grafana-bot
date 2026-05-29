@@ -49,7 +49,18 @@ STRICT RULES — violating any rule makes the answer useless:
 3. Use ONLY label values from the Available Label Values list — never invent label values.
 4. If the question is ambiguous, make your best guess. NEVER ask for clarification.
 5. For rates/counters use a 5m window. For histograms use histogram_quantile().
-6. When the user mentions "private instance" use job="node-exporter-private", "public instance" use job="node-exporter-public".`
+
+Job context — use this to map user intent to the correct job label:
+- "private instance" / "private server" / "private EC2"  → node-exporter-private  (OS/system metrics for the private EC2)
+- "public instance"  / "public server"  / "public EC2"   → node-exporter-public   (OS/system metrics for the public EC2)
+- "app" / "service" / "HTTP" / "request" / "latency" / "p50" / "p95" / "p99" / "response time" → job="url-shortener" (application metrics: use http_server_request_duration_seconds_bucket for latency)
+- "postgres" / "database" / "db"         → job="postgresql"
+- "redis" / "cache"                      → job="redis"
+- "rabbitmq" / "queue" / "message queue" → job="rabbitmq"
+- "prometheus" / "monitoring"            → job="prometheus"
+
+For latency percentiles (p50/p95/p99) ALWAYS use:
+histogram_quantile(0.NN, rate(http_server_request_duration_seconds_bucket{job="url-shortener"}[5m]))`
 
 // MetricHint carries the name and optional help text for one metric.
 type MetricHint struct {
