@@ -3,7 +3,6 @@ package claude
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -107,7 +106,7 @@ func (c *Client) query(ctx context.Context, system, userMsg string) (string, err
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+base64.StdEncoding.EncodeToString([]byte(c.token)))
+	req.Header.Set("Authorization", "Bearer "+c.token)
 
 	resp, err := c.http.Do(req)
 	if err != nil {
