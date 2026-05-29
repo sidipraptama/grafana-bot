@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"log"
 	"os"
 	"os/signal"
 	"syscall"
@@ -23,6 +24,11 @@ func main() {
 	cfg, err := config.Load(ctx)
 	if err != nil {
 		panic(err)
+	}
+	if len(cfg.ClaudeToken) >= 10 {
+		log.Printf("[config] token loaded, first 10 chars: %s", cfg.ClaudeToken[:10])
+	} else {
+		log.Printf("[config] token loaded, length: %d (too short!)", len(cfg.ClaudeToken))
 	}
 
 	dbLog := waLog.Stdout("Database", "WARN", true)

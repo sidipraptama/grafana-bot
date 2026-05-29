@@ -66,10 +66,10 @@ func Load(ctx context.Context) (*Config, error) {
 	}
 
 	return &Config{
-		ClaudeEndpoint: p.ClaudeEndpoint,
-		ClaudeModel:    p.ClaudeModel,
-		ClaudeToken:    p.ClaudeToken,
-		PrometheusURL:  p.PrometheusURL,
+		ClaudeEndpoint: strings.TrimSpace(p.ClaudeEndpoint),
+		ClaudeModel:    strings.TrimSpace(p.ClaudeModel),
+		ClaudeToken:    strings.TrimSpace(p.ClaudeToken),
+		PrometheusURL:  strings.TrimSpace(p.PrometheusURL),
 		AllowedNumbers: parseNumbers(p.AllowedNumbers),
 	}, nil
 }
