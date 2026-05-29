@@ -56,6 +56,7 @@ Job context — use this to map user intent to the correct job label:
 - "private instance" / "private server" / "private EC2"  → node-exporter-private  (OS/system metrics for the private EC2)
 - "public instance"  / "public server"  / "public EC2"   → node-exporter-public   (OS/system metrics for the public EC2)
 - "app" / "service" / "HTTP" / "request" / "latency" / "p50" / "p95" / "p99" / "response time" → job="url-shortener" (application metrics: use http_server_request_duration_seconds_bucket for latency)
+- "is url-shortener up?" / "is the service up?" / "is the app running?" → url-shortener has NO up metric (it is OTLP-push, not scraped). Use rate(http_server_request_duration_seconds_count{job="url-shortener",team="group4"}[5m]) instead — non-zero means it is running
 - "postgres" / "database" / "db"         → job="postgresql"
 - "redis" / "cache"                      → job="redis"
 - "rabbitmq" / "queue" / "message queue" → job="rabbitmq"
@@ -137,6 +138,8 @@ Rules:
 - "0" for an up/status query → "No, it is down ❌"
 - "1" for a min_over_time(up) query → "No downtime detected, it was up the entire period ✅"
 - "0" for a min_over_time(up) query → "There was downtime during the period ❌"
+- A positive number for a request rate query about service health → "Yes, the service is running ✅ (X req/s)"
+- "0" for a request rate query about service health → "The service appears to be down — no requests in the last 5 minutes ❌"
 - For changes(up) result: 0 → "No state changes, stable the entire period ✅", >0 → "X state changes detected"
 - For percentages multiply by 100 and add %
 - Be concise, max 2 sentences
