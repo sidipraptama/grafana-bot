@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 )
 
 type Client struct {
@@ -39,30 +40,64 @@ type bedrockResponse struct {
 	} `json:"content"`
 }
 
-const systemPrompt = `You are a Prometheus metrics assistant for a URL shortener service running on AWS EC2.
-Convert natural language questions into PromQL queries.
+const baseSystemPrompt = `You are a Prometheus metrics assistant.
+Convert natural language questions into PromQL instant queries.
 
-Available metrics:
-- CPU usage %: 100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)
-- Memory usage %: 100 * (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes))
-- Disk usage %: 100 * (1 - (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}))
-- Disk I/O read: rate(node_disk_read_bytes_total[5m])
-- Disk I/O write: rate(node_disk_written_bytes_total[5m])
-- Network in: rate(node_network_receive_bytes_total{device!="lo"}[5m])
-- Network out: rate(node_network_transmit_bytes_total{device!="lo"}[5m])
-- HTTP request rate: rate(http_server_request_count_total[5m])
-- HTTP error rate: rate(http_server_request_count_total{http_response_status_code=~"5.."}[5m])
-- Active goroutines: go_goroutines
-- Service up: up
+Rules:
+- Respond with ONLY the PromQL expression. No explanation, no markdown, no backticks.
+- Use ONLY metric names from the list below — never invent metric names.
+- Prefer simple label selectors; omit label filters unless required by the question.
+- For rates, use a 5m window by default.`
 
-Respond with ONLY the PromQL query. No explanation, no markdown, no backticks.`
+// MetricHint carries the name and optional help text for one metric.
+type MetricHint struct {
+	Name string
+	Help string
+	Type string
+}
 
-func (c *Client) Query(ctx context.Context, question string) (string, error) {
+// buildSystemPrompt constructs a system prompt that includes the actual
+// metric names scraped from Prometheus so Claude never guesses wrong names.
+func buildSystemPrompt(metrics []MetricHint) string {
+	if len(metrics) == 0 {
+		return baseSystemPrompt
+	}
+
+	var sb strings.Builder
+	sb.WriteString(baseSystemPrompt)
+	sb.WriteString("\n\nAvailable metrics (name — description):\n")
+	for _, m := range metrics {
+		if m.Help != "" {
+			sb.WriteString(fmt.Sprintf("- %s — %s\n", m.Name, m.Help))
+		} else {
+			sb.WriteString(fmt.Sprintf("- %s\n", m.Name))
+		}
+	}
+	return sb.String()
+}
+
+// Query translates a natural-language question into a PromQL expression.
+// Pass the metrics slice from prom.Client so Claude knows exactly which
+// metric names exist; pass nil to fall back to the generic prompt.
+func (c *Client) Query(ctx context.Context, question string, metrics []MetricHint) (string, error) {
+	return c.query(ctx, buildSystemPrompt(metrics), question)
+}
+
+// Refine is called when a previous PromQL returned no data. It asks Claude
+// to produce an alternative query given the failed attempt.
+func (c *Client) Refine(ctx context.Context, question, failedQuery string, metrics []MetricHint) (string, error) {
+	system := buildSystemPrompt(metrics) +
+		"\n\nIMPORTANT: The query below returned no results. Generate a corrected query." +
+		"\nFailed query: " + failedQuery
+	return c.query(ctx, system, question)
+}
+
+func (c *Client) query(ctx context.Context, system, userMsg string) (string, error) {
 	body, _ := json.Marshal(bedrockRequest{
 		AnthropicVersion: "bedrock-2023-05-31",
 		MaxTokens:        256,
-		System:           systemPrompt,
-		Messages:         []message{{Role: "user", Content: question}},
+		System:           system,
+		Messages:         []message{{Role: "user", Content: userMsg}},
 	})
 
 	url := fmt.Sprintf("%s/model/%s/invoke", c.endpoint, c.model)
@@ -91,5 +126,11 @@ func (c *Client) Query(ctx context.Context, question string) (string, error) {
 	if len(result.Content) == 0 {
 		return "", fmt.Errorf("empty response")
 	}
-	return result.Content[0].Text, nil
+
+	// Strip accidental markdown fences Claude might still emit
+	out := strings.TrimSpace(result.Content[0].Text)
+	out = strings.TrimPrefix(out, "```promql")
+	out = strings.TrimPrefix(out, "```")
+	out = strings.TrimSuffix(out, "```")
+	return strings.TrimSpace(out), nil
 }
