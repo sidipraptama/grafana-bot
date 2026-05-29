@@ -118,6 +118,22 @@ func (c *Client) Refine(ctx context.Context, question, failedQuery string, metri
 	return c.query(ctx, system, question)
 }
 
+// Format converts a raw Prometheus result into a friendly conversational reply.
+func (c *Client) Format(ctx context.Context, question, result string) (string, error) {
+	system := `You are a friendly infrastructure assistant replying on WhatsApp.
+Convert the raw Prometheus result into one short, natural sentence.
+Rules:
+- Seconds to ms: 0.003 → "3ms", 0.0003 → "0.3ms"
+- "1" for an up/status query → "Yes, it is up ✅"
+- "0" for an up/status query → "No, it is down ❌"
+- For percentages multiply by 100 and add %
+- Be concise, max 2 sentences
+- Do not mention PromQL or Prometheus`
+
+	msg := fmt.Sprintf("Question: %s\nResult: %s", question, result)
+	return c.query(ctx, system, msg)
+}
+
 func (c *Client) query(ctx context.Context, system, userMsg string) (string, error) {
 	body, _ := json.Marshal(bedrockRequest{
 		AnthropicVersion: "bedrock-2023-05-31",

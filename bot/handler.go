@@ -108,6 +108,9 @@ func (h *Handler) answer(ctx context.Context, question string) (string, error) {
 	}
 	log.Printf("[claude] generated promql: %s", promql)
 
+	// Ensure histogram queries always aggregate by (le) to return a single series.
+	promql = ensureSumByLe(promql)
+
 	result, err := h.prom.Query(ctx, promql)
 	if err != nil {
 		return "", fmt.Errorf("prometheus: %w", err)
@@ -118,15 +121,45 @@ func (h *Handler) answer(ctx context.Context, question string) (string, error) {
 		log.Printf("[prom] no data, asking claude to refine")
 		refined, rerr := h.claude.Refine(ctx, question, promql, hints, labels)
 		if rerr == nil && refined != promql {
+			refined = ensureSumByLe(refined)
 			log.Printf("[claude] refined promql: %s", refined)
 			if r2, rerr2 := h.prom.Query(ctx, refined); rerr2 == nil && r2 != "No data found." {
-				return fmt.Sprintf("%s\n\n_(query: `%s`)_", r2, refined), nil
+				result = r2
+				promql = refined
 			}
 		}
-		return fmt.Sprintf("No data found for your question.\n_(tried: `%s`)_", promql), nil
+		if result == "No data found." {
+			return fmt.Sprintf("No data found for your question.\n_(tried: `%s`)_", promql), nil
+		}
 	}
 
-	return fmt.Sprintf("%s\n\n_(query: `%s`)_", result, promql), nil
+	// Format the raw result into a friendly natural language response.
+	friendly, ferr := h.claude.Format(ctx, question, result)
+	if ferr != nil {
+		log.Printf("[format] error: %v, falling back to raw", ferr)
+		return fmt.Sprintf("%s\n\n_(query: `%s`)_", result, promql), nil
+	}
+	return fmt.Sprintf("%s\n\n_(query: `%s`)_", friendly, promql), nil
+}
+
+// ensureSumByLe rewrites histogram_quantile queries that are missing sum() by (le)
+// so they always return a single aggregated series.
+func ensureSumByLe(promql string) string {
+	if !strings.Contains(promql, "histogram_quantile") || strings.Contains(promql, "sum(") {
+		return promql
+	}
+	// Wrap rate() with sum(...) by (le)
+	promql = strings.Replace(promql, ", rate(", ", sum(rate(", 1)
+	// Insert ) by (le) before the second-to-last closing paren
+	last := strings.LastIndex(promql, ")")
+	if last < 0 {
+		return promql
+	}
+	secondLast := strings.LastIndex(promql[:last], ")")
+	if secondLast < 0 {
+		return promql
+	}
+	return promql[:secondLast+1] + " by (le)" + promql[secondLast+1:]
 }
 
 // getCache returns cached metric hints and label values, refreshing when stale.
