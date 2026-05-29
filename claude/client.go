@@ -41,13 +41,15 @@ type bedrockResponse struct {
 }
 
 const baseSystemPrompt = `You are a Prometheus metrics assistant.
-Convert natural language questions into PromQL instant queries.
+Convert natural language questions into a single PromQL instant query.
 
-Rules:
-- Respond with ONLY the PromQL expression. No explanation, no markdown, no backticks.
-- Use ONLY metric names from the list below — never invent metric names.
-- Prefer simple label selectors; omit label filters unless required by the question.
-- For rates, use a 5m window by default.`
+STRICT RULES — violating any rule makes the answer useless:
+1. Respond with ONLY the PromQL expression. No words, no explanation, no markdown, no backticks, no options.
+2. Use ONLY metric names from the Available Metrics list — never invent names.
+3. Use ONLY label values from the Available Label Values list — never invent label values.
+4. If the question is ambiguous, make your best guess. NEVER ask for clarification.
+5. For rates/counters use a 5m window. For histograms use histogram_quantile().
+6. When the user mentions "private instance" use job="node-exporter-private", "public instance" use job="node-exporter-public".`
 
 // MetricHint carries the name and optional help text for one metric.
 type MetricHint struct {
@@ -56,38 +58,42 @@ type MetricHint struct {
 	Type string
 }
 
-// buildSystemPrompt constructs a system prompt that includes the actual
-// metric names scraped from Prometheus so Claude never guesses wrong names.
-func buildSystemPrompt(metrics []MetricHint) string {
-	if len(metrics) == 0 {
-		return baseSystemPrompt
-	}
-
+// buildSystemPrompt constructs a system prompt with real metric names and label values.
+func buildSystemPrompt(metrics []MetricHint, labels map[string][]string) string {
 	var sb strings.Builder
 	sb.WriteString(baseSystemPrompt)
-	sb.WriteString("\n\nAvailable metrics (name — description):\n")
-	for _, m := range metrics {
-		if m.Help != "" {
-			sb.WriteString(fmt.Sprintf("- %s — %s\n", m.Name, m.Help))
-		} else {
-			sb.WriteString(fmt.Sprintf("- %s\n", m.Name))
+
+	if len(labels) > 0 {
+		sb.WriteString("\n\nAvailable Label Values:\n")
+		for labelName, values := range labels {
+			sb.WriteString(fmt.Sprintf("- %s: %s\n", labelName, strings.Join(values, ", ")))
 		}
 	}
+
+	if len(metrics) > 0 {
+		sb.WriteString("\nAvailable Metrics (name — description):\n")
+		for _, m := range metrics {
+			if m.Help != "" {
+				sb.WriteString(fmt.Sprintf("- %s — %s\n", m.Name, m.Help))
+			} else {
+				sb.WriteString(fmt.Sprintf("- %s\n", m.Name))
+			}
+		}
+	}
+
 	return sb.String()
 }
 
 // Query translates a natural-language question into a PromQL expression.
-// Pass the metrics slice from prom.Client so Claude knows exactly which
-// metric names exist; pass nil to fall back to the generic prompt.
-func (c *Client) Query(ctx context.Context, question string, metrics []MetricHint) (string, error) {
-	return c.query(ctx, buildSystemPrompt(metrics), question)
+func (c *Client) Query(ctx context.Context, question string, metrics []MetricHint, labels map[string][]string) (string, error) {
+	return c.query(ctx, buildSystemPrompt(metrics, labels), question)
 }
 
 // Refine is called when a previous PromQL returned no data. It asks Claude
 // to produce an alternative query given the failed attempt.
-func (c *Client) Refine(ctx context.Context, question, failedQuery string, metrics []MetricHint) (string, error) {
-	system := buildSystemPrompt(metrics) +
-		"\n\nIMPORTANT: The query below returned no results. Generate a corrected query." +
+func (c *Client) Refine(ctx context.Context, question, failedQuery string, metrics []MetricHint, labels map[string][]string) (string, error) {
+	system := buildSystemPrompt(metrics, labels) +
+		"\n\nThe query below returned no results. Generate a corrected query using only the available label values above." +
 		"\nFailed query: " + failedQuery
 	return c.query(ctx, system, question)
 }

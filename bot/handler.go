@@ -18,8 +18,16 @@ import (
 	"whatsapp-bot/prom"
 )
 
-// metricsCacheTTL controls how long discovered metric names are reused.
 const metricsCacheTTL = 5 * time.Minute
+
+// labelsToFetch are the label names whose values are injected into the Claude prompt.
+var labelsToFetch = []string{"job", "instance", "service", "env"}
+
+type cache struct {
+	hints       []claude.MetricHint
+	labels      map[string][]string
+	expiry      time.Time
+}
 
 type Handler struct {
 	wa             *whatsmeow.Client
@@ -27,9 +35,8 @@ type Handler struct {
 	prom           *prom.Client
 	allowedNumbers map[string]bool
 
-	mu          sync.Mutex
-	cachedHints []claude.MetricHint
-	cacheExpiry time.Time
+	mu    sync.Mutex
+	cache cache
 }
 
 func NewHandler(wa *whatsmeow.Client, cfg *config.Config) *Handler {
@@ -41,13 +48,11 @@ func NewHandler(wa *whatsmeow.Client, cfg *config.Config) *Handler {
 	}
 }
 
-// allowed returns true if the sender is whitelisted, or if no whitelist is configured.
 func (h *Handler) allowed(msg *events.Message) bool {
 	if len(h.allowedNumbers) == 0 {
 		return true
 	}
-	sender := msg.Info.Sender.User // the number part of the JID, e.g. "628123456789"
-	return h.allowedNumbers[sender]
+	return h.allowedNumbers[msg.Info.Sender.User]
 }
 
 func (h *Handler) Handle(evt interface{}) {
@@ -86,14 +91,12 @@ func (h *Handler) Handle(evt interface{}) {
 }
 
 func (h *Handler) answer(ctx context.Context, question string) (string, error) {
-	hints, err := h.getMetricHints(ctx)
+	hints, labels, err := h.getCache(ctx)
 	if err != nil {
-		log.Printf("metric discovery failed, proceeding without hints: %v", err)
-		hints = nil
+		log.Printf("cache refresh failed, proceeding without hints: %v", err)
 	}
 
-	// First attempt
-	promql, err := h.claude.Query(ctx, question, hints)
+	promql, err := h.claude.Query(ctx, question, hints, labels)
 	if err != nil {
 		return "", fmt.Errorf("claude: %w", err)
 	}
@@ -105,10 +108,9 @@ func (h *Handler) answer(ctx context.Context, question string) (string, error) {
 	}
 	log.Printf("[prom] result: %s", result)
 
-	// Retry once when Prometheus returned no data
 	if result == "No data found." {
 		log.Printf("[prom] no data, asking claude to refine")
-		refined, rerr := h.claude.Refine(ctx, question, promql, hints)
+		refined, rerr := h.claude.Refine(ctx, question, promql, hints, labels)
 		if rerr == nil && refined != promql {
 			log.Printf("[claude] refined promql: %s", refined)
 			if r2, rerr2 := h.prom.Query(ctx, refined); rerr2 == nil && r2 != "No data found." {
@@ -121,35 +123,44 @@ func (h *Handler) answer(ctx context.Context, question string) (string, error) {
 	return fmt.Sprintf("%s\n\n_(query: `%s`)_", result, promql), nil
 }
 
-// getMetricHints returns cached metric hints, refreshing when stale.
-func (h *Handler) getMetricHints(ctx context.Context) ([]claude.MetricHint, error) {
+// getCache returns cached metric hints and label values, refreshing when stale.
+func (h *Handler) getCache(ctx context.Context) ([]claude.MetricHint, map[string][]string, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	if time.Now().Before(h.cacheExpiry) {
-		return h.cachedHints, nil
+	if time.Now().Before(h.cache.expiry) {
+		return h.cache.hints, h.cache.labels, nil
 	}
 
+	// Fetch metric names + metadata
 	names, err := h.prom.ListMetricNames(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-
-	meta, _ := h.prom.GetMetricMetadata(ctx) // best-effort; ignore error
+	meta, _ := h.prom.GetMetricMetadata(ctx)
 
 	hints := make([]claude.MetricHint, 0, len(names))
 	for _, name := range names {
-		h := claude.MetricHint{Name: name}
+		hint := claude.MetricHint{Name: name}
 		if m, ok := meta[name]; ok {
-			h.Help = m.Help
-			h.Type = m.Type
+			hint.Help = m.Help
+			hint.Type = m.Type
 		}
-		hints = append(hints, h)
+		hints = append(hints, hint)
 	}
 
-	h.cachedHints = hints
-	h.cacheExpiry = time.Now().Add(metricsCacheTTL)
-	return hints, nil
+	// Fetch important label values so Claude knows real job/instance names
+	labelMap := make(map[string][]string)
+	for _, label := range labelsToFetch {
+		vals, lerr := h.prom.ListLabelValues(ctx, label)
+		if lerr == nil && len(vals) > 0 {
+			labelMap[label] = vals
+		}
+	}
+	log.Printf("[cache] refreshed: %d metrics, labels: %v", len(hints), labelMap)
+
+	h.cache = cache{hints: hints, labels: labelMap, expiry: time.Now().Add(metricsCacheTTL)}
+	return hints, labelMap, nil
 }
 
 func extractText(msg *events.Message) string {

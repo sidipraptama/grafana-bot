@@ -100,8 +100,13 @@ func (c *Client) Query(ctx context.Context, query string) (string, error) {
 
 // ListMetricNames returns all metric names currently scraped by Prometheus.
 func (c *Client) ListMetricNames(ctx context.Context) ([]string, error) {
+	return c.ListLabelValues(ctx, "__name__")
+}
+
+// ListLabelValues returns all values for a given label name.
+func (c *Client) ListLabelValues(ctx context.Context, label string) ([]string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		c.baseURL+"/api/v1/label/__name__/values", nil)
+		c.baseURL+"/api/v1/label/"+label+"/values", nil)
 	if err != nil {
 		return nil, err
 	}
