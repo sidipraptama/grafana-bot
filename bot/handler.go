@@ -22,7 +22,7 @@ import (
 const metricsCacheTTL = 5 * time.Minute
 
 // labelsToFetch are the label names whose values are injected into the Claude prompt.
-var labelsToFetch = []string{"job", "instance", "service", "env"}
+var labelsToFetch = []string{"job", "instance", "service", "env", "team"}
 
 type cache struct {
 	hints       []claude.MetricHint
