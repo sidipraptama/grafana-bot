@@ -138,5 +138,61 @@ func (c *Client) query(ctx context.Context, system, userMsg string) (string, err
 	out = strings.TrimPrefix(out, "```promql")
 	out = strings.TrimPrefix(out, "```")
 	out = strings.TrimSuffix(out, "```")
-	return strings.TrimSpace(out), nil
+	out = strings.TrimSpace(out)
+
+	// If Claude returned a single-line expression, we're done.
+	// If it returned verbose text, try to extract the last PromQL-looking line.
+	// If nothing looks like PromQL, return the text as a ClarificationError so
+	// the caller can forward it to the user.
+	if !strings.Contains(out, "\n") {
+		return out, nil
+	}
+
+	if promql := extractPromQL(out); promql != "" {
+		return promql, nil
+	}
+
+	return "", &ClarificationError{Message: out}
+}
+
+// ClarificationError is returned when Claude responds with a question or
+// explanation instead of a PromQL expression.
+type ClarificationError struct {
+	Message string
+}
+
+func (e *ClarificationError) Error() string { return "clarification: " + e.Message }
+
+// extractPromQL scans lines bottom-up for the first PromQL-like expression.
+func extractPromQL(text string) string {
+	lines := strings.Split(text, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if isPromQL(line) {
+			return line
+		}
+	}
+	return ""
+}
+
+// isPromQL returns true if the line looks like a PromQL expression rather
+// than natural language — starts with a lowercase letter or underscore and
+// does not begin with common English sentence starters.
+func isPromQL(s string) bool {
+	if s == "" || len(s) < 2 {
+		return false
+	}
+	first := s[0]
+	if !(first >= 'a' && first <= 'z' || first == '_') {
+		return false
+	}
+	// Reject lines that look like English sentences
+	starters := []string{"i ", "i'", "you ", "the ", "this ", "here ", "however", "since ", "please", "could "}
+	lower := strings.ToLower(s)
+	for _, w := range starters {
+		if strings.HasPrefix(lower, w) {
+			return false
+		}
+	}
+	return true
 }

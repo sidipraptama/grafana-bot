@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -98,6 +99,11 @@ func (h *Handler) answer(ctx context.Context, question string) (string, error) {
 
 	promql, err := h.claude.Query(ctx, question, hints, labels)
 	if err != nil {
+		var clarErr *claude.ClarificationError
+		if errors.As(err, &clarErr) {
+			log.Printf("[claude] clarification needed: %s", clarErr.Message)
+			return clarErr.Message, nil
+		}
 		return "", fmt.Errorf("claude: %w", err)
 	}
 	log.Printf("[claude] generated promql: %s", promql)
