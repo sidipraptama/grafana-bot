@@ -60,8 +60,8 @@ Job context — use this to map user intent to the correct job label:
 - "rabbitmq" / "queue" / "message queue" → job="rabbitmq"
 - "prometheus" / "monitoring"            → job="prometheus"
 
-For latency percentiles (p50/p95/p99) ALWAYS use:
-histogram_quantile(0.NN, rate(http_server_request_duration_seconds_bucket{job="url-shortener"}[5m]))
+For latency percentiles (p50/p95/p99) ALWAYS use this exact pattern (sum by le is mandatory):
+histogram_quantile(0.NN, sum(rate(http_server_request_duration_seconds_bucket{job="url-shortener"}[5m])) by (le))
 
 Label rules for url-shortener app metrics (http_server_request_duration_seconds_*):
 - Valid filter labels: job, http_route, http_request_method, http_response_status_code, env, host

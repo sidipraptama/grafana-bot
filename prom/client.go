@@ -77,21 +77,41 @@ func (c *Client) Query(ctx context.Context, query string) (string, error) {
 		return "No data found.", nil
 	}
 
+	// Filter out NaN results
+	var valid []struct {
+		metric map[string]string
+		val    string
+	}
+	for _, r := range result.Data.Result {
+		v := r.Value[1].(string)
+		if v != "NaN" && v != "+Inf" && v != "-Inf" {
+			valid = append(valid, struct {
+				metric map[string]string
+				val    string
+			}{r.Metric, v})
+		}
+	}
+
+	if len(valid) == 0 {
+		return "No data found.", nil
+	}
+
 	var sb strings.Builder
-	for i, r := range result.Data.Result {
-		val := r.Value[1].(string)
-		if len(result.Data.Result) > 1 {
-			// Multi-result: show instance label for context
-			instance := r.Metric["instance"]
-			if instance == "" {
-				instance = r.Metric["job"]
+	for i, r := range valid {
+		if len(valid) > 1 {
+			label := r.metric["instance"]
+			if label == "" {
+				label = r.metric["job"]
 			}
-			sb.WriteString(fmt.Sprintf("• %s: %s\n", instance, val))
+			if label == "" {
+				label = fmt.Sprintf("series %d", i+1)
+			}
+			sb.WriteString(fmt.Sprintf("• %s: %s\n", label, r.val))
 		} else {
-			sb.WriteString(val)
+			sb.WriteString(r.val)
 		}
 		if i >= 4 {
-			sb.WriteString(fmt.Sprintf("... and %d more", len(result.Data.Result)-i-1))
+			sb.WriteString(fmt.Sprintf("... and %d more", len(valid)-i-1))
 			break
 		}
 	}
