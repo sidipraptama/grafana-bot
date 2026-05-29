@@ -20,7 +20,10 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	cfg := config.Load()
+	cfg, err := config.Load(ctx)
+	if err != nil {
+		panic(err)
+	}
 
 	dbLog := waLog.Stdout("Database", "WARN", true)
 	container, err := sqlstore.New(ctx, "sqlite3", "file:session.db?_foreign_keys=on", dbLog)

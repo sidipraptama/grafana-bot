@@ -22,9 +22,10 @@ import (
 const metricsCacheTTL = 5 * time.Minute
 
 type Handler struct {
-	wa     *whatsmeow.Client
-	claude *claude.Client
-	prom   *prom.Client
+	wa             *whatsmeow.Client
+	claude         *claude.Client
+	prom           *prom.Client
+	allowedNumbers map[string]bool
 
 	mu          sync.Mutex
 	cachedHints []claude.MetricHint
@@ -33,15 +34,29 @@ type Handler struct {
 
 func NewHandler(wa *whatsmeow.Client, cfg *config.Config) *Handler {
 	return &Handler{
-		wa:     wa,
-		claude: claude.New(cfg.ClaudeEndpoint, cfg.ClaudeModel, cfg.ClaudeToken),
-		prom:   prom.New(cfg.PrometheusURL),
+		wa:             wa,
+		claude:         claude.New(cfg.ClaudeEndpoint, cfg.ClaudeModel, cfg.ClaudeToken),
+		prom:           prom.New(cfg.PrometheusURL),
+		allowedNumbers: cfg.AllowedNumbers,
 	}
+}
+
+// allowed returns true if the sender is whitelisted, or if no whitelist is configured.
+func (h *Handler) allowed(msg *events.Message) bool {
+	if len(h.allowedNumbers) == 0 {
+		return true
+	}
+	sender := msg.Info.Sender.User // the number part of the JID, e.g. "628123456789"
+	return h.allowedNumbers[sender]
 }
 
 func (h *Handler) Handle(evt interface{}) {
 	msg, ok := evt.(*events.Message)
 	if !ok {
+		return
+	}
+
+	if !h.allowed(msg) {
 		return
 	}
 
