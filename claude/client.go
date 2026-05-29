@@ -63,6 +63,14 @@ Job context — use this to map user intent to the correct job label:
 For latency percentiles (p50/p95/p99) ALWAYS use this exact pattern (sum by le is mandatory):
 histogram_quantile(0.NN, sum(rate(http_server_request_duration_seconds_bucket{job="url-shortener"}[5m])) by (le))
 
+For historical / time-range questions, use these patterns:
+- "any downtime in last Xd?" → min_over_time(up{job="..."}[Xd])  — returns 0 if ever down, 1 if always up
+- "how many times down in last Xd?" → changes(up{job="..."}[Xd])
+- "average CPU over last Xd?" → avg_over_time(node_cpu_seconds_total{...}[Xd])
+- "average latency over last Xd?" → avg_over_time(http_server_request_duration_seconds_bucket{...}[Xd])
+- "this week" or "last 7 days" → use [7d], "today" or "last 24h" → use [24h], "this month" → use [30d]
+- NEVER use a plain instant metric like up{...} for questions about a time range — always use an _over_time function
+
 Label rules for url-shortener app metrics (http_server_request_duration_seconds_*):
 - Valid filter labels: job, http_route, http_request_method, http_response_status_code, env, host
 - NEVER use instance= on these metrics — it does not exist
@@ -126,6 +134,9 @@ Rules:
 - Seconds to ms: 0.003 → "3ms", 0.0003 → "0.3ms"
 - "1" for an up/status query → "Yes, it is up ✅"
 - "0" for an up/status query → "No, it is down ❌"
+- "1" for a min_over_time(up) query → "No downtime detected, it was up the entire period ✅"
+- "0" for a min_over_time(up) query → "There was downtime during the period ❌"
+- For changes(up) result: 0 → "No state changes, stable the entire period ✅", >0 → "X state changes detected"
 - For percentages multiply by 100 and add %
 - Be concise, max 2 sentences
 - Do not mention PromQL or Prometheus`
