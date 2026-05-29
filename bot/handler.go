@@ -57,22 +57,28 @@ func (h *Handler) Handle(evt interface{}) {
 	}
 
 	if !h.allowed(msg) {
+		log.Printf("[whitelist] blocked message from %s", msg.Info.Sender.User)
 		return
 	}
 
 	text := extractText(msg)
 	if text == "" {
+		log.Printf("[handler] ignored empty/non-text message from %s", msg.Info.Sender.User)
 		return
 	}
+
+	log.Printf("[handler] received from %s: %q", msg.Info.Sender.User, text)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	reply, err := h.answer(ctx, text)
 	if err != nil {
-		log.Printf("answer error: %v", err)
+		log.Printf("[handler] answer error: %v", err)
 		reply = "Sorry, something went wrong. Please try again."
 	}
+
+	log.Printf("[handler] replying to %s: %q", msg.Info.Sender.User, reply)
 
 	h.wa.SendMessage(ctx, msg.Info.Chat, &waE2E.Message{
 		Conversation: proto.String(reply),
@@ -91,16 +97,20 @@ func (h *Handler) answer(ctx context.Context, question string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("claude: %w", err)
 	}
+	log.Printf("[claude] generated promql: %s", promql)
 
 	result, err := h.prom.Query(ctx, promql)
 	if err != nil {
 		return "", fmt.Errorf("prometheus: %w", err)
 	}
+	log.Printf("[prom] result: %s", result)
 
 	// Retry once when Prometheus returned no data
 	if result == "No data found." {
+		log.Printf("[prom] no data, asking claude to refine")
 		refined, rerr := h.claude.Refine(ctx, question, promql, hints)
 		if rerr == nil && refined != promql {
+			log.Printf("[claude] refined promql: %s", refined)
 			if r2, rerr2 := h.prom.Query(ctx, refined); rerr2 == nil && r2 != "No data found." {
 				return fmt.Sprintf("%s\n\n_(query: `%s`)_", r2, refined), nil
 			}
