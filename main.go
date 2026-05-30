@@ -3,15 +3,10 @@ package main
 import (
 	"context"
 	"log"
-	"os"
 	"os/signal"
 	"syscall"
 
-	_ "github.com/mattn/go-sqlite3"
-	qrterminal "github.com/mdp/qrterminal/v3"
-	"go.mau.fi/whatsmeow"
-	"go.mau.fi/whatsmeow/store/sqlstore"
-	waLog "go.mau.fi/whatsmeow/util/log"
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
 	"whatsapp-bot/bot"
 	"whatsapp-bot/config"
@@ -25,45 +20,35 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	if len(cfg.ClaudeToken) >= 10 {
-		log.Printf("[config] token loaded, first 10 chars: %s", cfg.ClaudeToken[:10])
-	} else {
-		log.Printf("[config] token loaded, length: %d (too short!)", len(cfg.ClaudeToken))
+	if len(cfg.TelegramToken) >= 10 {
+		log.Printf("[config] telegram token loaded, first 10 chars: %s", cfg.TelegramToken[:10])
 	}
 
-	dbLog := waLog.Stdout("Database", "WARN", true)
-	container, err := sqlstore.New(ctx, "sqlite3", "file:session.db?_foreign_keys=on", dbLog)
+	tgBot, err := tgbotapi.NewBotAPI(cfg.TelegramToken)
 	if err != nil {
 		panic(err)
 	}
+	log.Printf("[telegram] authorized as @%s", tgBot.Self.UserName)
 
-	deviceStore, err := container.GetFirstDevice(ctx)
-	if err != nil {
-		panic(err)
-	}
+	h := bot.NewHandler(tgBot, cfg)
 
-	clientLog := waLog.Stdout("Client", "WARN", true)
-	client := whatsmeow.NewClient(deviceStore, clientLog)
+	u := tgbotapi.NewUpdate(0)
+	u.Timeout = 60
+	updates := tgBot.GetUpdatesChan(u)
 
-	h := bot.NewHandler(client, cfg)
-	client.AddEventHandler(h.Handle)
+	log.Println("[telegram] listening for messages...")
 
-	if client.Store.ID == nil {
-		qrChan, _ := client.GetQRChannel(ctx)
-		if err := client.Connect(); err != nil {
-			panic(err)
-		}
-		for evt := range qrChan {
-			if evt.Event == "code" {
-				qrterminal.GenerateHalfBlock(evt.Code, qrterminal.L, os.Stdout)
+	for {
+		select {
+		case <-ctx.Done():
+			log.Println("[telegram] shutting down")
+			tgBot.StopReceivingUpdates()
+			return
+		case update := <-updates:
+			if update.Message == nil {
+				continue
 			}
-		}
-	} else {
-		if err := client.Connect(); err != nil {
-			panic(err)
+			go h.Handle(update)
 		}
 	}
-
-	<-ctx.Done()
-	client.Disconnect()
 }
