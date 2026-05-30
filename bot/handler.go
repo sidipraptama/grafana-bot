@@ -129,6 +129,14 @@ func (h *Handler) answer(ctx context.Context, userID int64, question string) (st
 	}
 	log.Printf("[claude] generated promql: %s", promql)
 
+	// Safety net: Prometheus only accepts one expression. If Claude returned
+	// multiple queries joined by commas, keep only the first one.
+	if isMultiQuery(promql) {
+		log.Printf("[handler] multi-query detected, keeping first expression only")
+		promql = firstQuery(promql)
+		log.Printf("[handler] trimmed to: %s", promql)
+	}
+
 	promql = ensureSumByLe(promql)
 
 	result, err := h.prom.Query(ctx, promql)
@@ -218,6 +226,43 @@ func (h *Handler) getMetricsCache(ctx context.Context) ([]claude.MetricHint, map
 
 	h.cache = metricsCache{hints: hints, labels: labelMap, expiry: time.Now().Add(metricsCacheTTL)}
 	return hints, labelMap, nil
+}
+
+// isMultiQuery detects when Claude returned multiple PromQL expressions joined by commas.
+// It checks for top-level commas (outside of braces and parentheses).
+func isMultiQuery(promql string) bool {
+	depth := 0
+	for _, ch := range promql {
+		switch ch {
+		case '(', '{', '[':
+			depth++
+		case ')', '}', ']':
+			depth--
+		case ',':
+			if depth == 0 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// firstQuery extracts the first PromQL expression from a comma-separated multi-query.
+func firstQuery(promql string) string {
+	depth := 0
+	for i, ch := range promql {
+		switch ch {
+		case '(', '{', '[':
+			depth++
+		case ')', '}', ']':
+			depth--
+		case ',':
+			if depth == 0 {
+				return strings.TrimSpace(promql[:i])
+			}
+		}
+	}
+	return promql
 }
 
 // ensureSumByLe rewrites histogram_quantile queries missing sum() by (le).
