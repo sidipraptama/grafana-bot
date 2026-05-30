@@ -78,15 +78,20 @@ Do NOT ask if the question already specifies enough context to answer directly.
 Do NOT ask about env if user already said "production" or "prod" or "staging".
 
 Job context:
-- "private instance/server/EC2"  → job="node-exporter-private"
-- "public instance/server/EC2"   → job="node-exporter-public"
-- "both instances"               → job=~"node-exporter-private|node-exporter-public"
+- "private instance/server/EC2"       → job="node-exporter-private"
+- "public instance/server/EC2"        → job="node-exporter-public"
+- "both instances" / "all instances"  → job=~"node-exporter-private|node-exporter-public"
+- "grafana instance/server" / "infra" / "monitoring server" → job="node-exporter", service="grafana-infra" (the Grafana monitoring server)
 - "app/service/HTTP/latency/p50/p95/p99" → job="url-shortener" with http_server_request_duration_seconds_bucket
 - "is the app/service up/running?" → url-shortener has NO up metric; use rate(http_server_request_duration_seconds_count{job="url-shortener",team="group4"}[5m])
-- "postgres/database/db"         → job="postgresql"
-- "redis/cache"                  → job="redis"
-- "rabbitmq/queue"               → job="rabbitmq"
-- "prometheus/monitoring"        → job="prometheus"
+- "postgres/database/db"              → job="postgresql"
+- "redis/cache"                       → job="redis"
+- "rabbitmq/queue"                    → job="rabbitmq"
+- "prometheus/monitoring metrics"     → job="prometheus"
+
+For "are instances up?" queries — ALWAYS aggregate to avoid duplicate series:
+max by (job) (up{job=~"node-exporter-.*",team="group4"})
+For a specific instance: max by (job) (up{job="node-exporter-private",team="group4"})
 
 Latency percentiles — ALWAYS use sum by (le):
 histogram_quantile(0.NN, sum(rate(http_server_request_duration_seconds_bucket{job="url-shortener",team="group4"}[5m])) by (le))
@@ -166,26 +171,67 @@ func (c *Client) Refine(ctx context.Context, question, failedQuery string, metri
 }
 
 // Format converts a raw Prometheus result into a friendly plain-text reply.
-func (c *Client) Format(ctx context.Context, question, result string) (string, error) {
+// promql is passed for context so Claude can correctly interpret the metric type.
+func (c *Client) Format(ctx context.Context, question, promql, result string) (string, error) {
 	system := `You are a friendly infrastructure assistant replying on Telegram.
 Convert the raw Prometheus result into a short, natural response that directly answers the question.
 Rules:
 - Output plain text only — no markdown, no asterisks, no backticks, no underscores
+- Use the PromQL to understand what metric is being reported (bytes, seconds, ratio, count, etc.)
+- Bytes to human readable: 1073741824 → "1 GB", 536870912 → "512 MB", 107374182 → "~100 MB"
 - Seconds to ms: 0.003 → "3ms", 0.0003 → "0.3ms"
-- Single "1" for an up query → "Yes, it is up ✅"
-- Single "0" for an up query → "No, it is down ❌"
-- Multiple up results (bullet list) → describe each instance by job name, state whether each is up or down
-- "1" for min_over_time(up) → "No downtime detected, it was up the entire period ✅"
-- "0" for min_over_time(up) → "There was downtime during this period ❌"
+- Filesystem bytes = disk/storage space, NOT memory
+- Single "1" for an up/min_over_time(up) query → "Yes, it is up ✅" / "No downtime detected ✅"
+- Single "0" for an up/min_over_time(up) query → "No, it is down ❌" / "There was downtime ❌"
+- Multiple up results → list each by job name with its status
 - Positive number for request rate health → "Yes, the service is running ✅"
-- "0" for request rate health → "The service appears to be down — no requests recently ❌"
+- "0" for request rate health → "The service appears to be down ❌"
 - For changes(up): 0 → "Stable, no state changes ✅", >0 → "X state changes detected ⚠️"
-- For percentages multiply by 100 and add %
+- For CPU percentage: result is already a ratio, multiply by 100 and add %
 - Be concise (max 2 sentences), directly answer the question
 - Do not mention PromQL or Prometheus`
 
-	msg := fmt.Sprintf("Question: %s\nResult: %s", question, result)
-	return c.query(ctx, system, msg)
+	msg := fmt.Sprintf("Question: %s\nPromQL used: %s\nResult: %s", question, promql, result)
+	return c.rawQuery(ctx, system, msg)
+}
+
+// rawQuery calls the API and returns the text as-is, without PromQL/clarification detection.
+// Used for formatting responses where we expect natural language, not PromQL.
+func (c *Client) rawQuery(ctx context.Context, system, userMsg string) (string, error) {
+	body, _ := json.Marshal(bedrockRequest{
+		AnthropicVersion: "bedrock-2023-05-31",
+		MaxTokens:        300,
+		System:           system,
+		Messages:         []message{{Role: "user", Content: userMsg}},
+	})
+
+	url := fmt.Sprintf("%s/model/%s/invoke", c.endpoint, c.model)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.token)
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("claude API %d: %s", resp.StatusCode, raw)
+	}
+
+	var result bedrockResponse
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return "", err
+	}
+	if len(result.Content) == 0 {
+		return "", fmt.Errorf("empty response")
+	}
+	return strings.TrimSpace(result.Content[0].Text), nil
 }
 
 func (c *Client) query(ctx context.Context, system, userMsg string) (string, error) {

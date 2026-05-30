@@ -153,7 +153,7 @@ func (h *Handler) answer(ctx context.Context, userID int64, question string) (st
 		}
 	}
 
-	friendly, ferr := h.claude.Format(ctx, question, result)
+	friendly, ferr := h.claude.Format(ctx, question, promql, result)
 	if ferr != nil {
 		log.Printf("[format] error: %v, falling back to raw", ferr)
 		return fmt.Sprintf("%s\n\n<i>query: <code>%s</code></i>", html.EscapeString(result), html.EscapeString(promql)), nil
