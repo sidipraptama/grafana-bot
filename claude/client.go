@@ -118,7 +118,17 @@ url-shortener app metric label rules:
 - NEVER use instance= on these metrics
 - "public/private" does NOT apply to app metrics — one url-shortener service only
 - Exclude health checks: http_route!="/health"
-- Filter errors: http_response_status_code=~"5.."`
+- Filter errors: http_response_status_code=~"5.."
+
+Available metrics (use ONLY these):
+- up
+- node_cpu_seconds_total
+- node_memory_MemAvailable_bytes, node_memory_MemTotal_bytes
+- node_filesystem_avail_bytes, node_filesystem_size_bytes
+- node_disk_read_bytes_total, node_disk_written_bytes_total
+- node_network_receive_bytes_total, node_network_transmit_bytes_total
+- node_vmstat_pgpgin, node_vmstat_pgpgout
+- http_server_request_duration_seconds_bucket, http_server_request_duration_seconds_count`
 
 // MetricHint carries the name and optional help text for one metric.
 type MetricHint struct {
@@ -127,28 +137,16 @@ type MetricHint struct {
 	Type string
 }
 
-func buildSystemPrompt(metrics []MetricHint, labels map[string][]string) string {
+func buildSystemPrompt(labels map[string][]string) string {
+	if len(labels) == 0 {
+		return baseSystemPrompt
+	}
 	var sb strings.Builder
 	sb.WriteString(baseSystemPrompt)
-
-	if len(labels) > 0 {
-		sb.WriteString("\n\nAvailable Label Values:\n")
-		for labelName, values := range labels {
-			sb.WriteString(fmt.Sprintf("- %s: %s\n", labelName, strings.Join(values, ", ")))
-		}
+	sb.WriteString("\n\nAvailable Label Values (from Prometheus):\n")
+	for labelName, values := range labels {
+		sb.WriteString(fmt.Sprintf("- %s: %s\n", labelName, strings.Join(values, ", ")))
 	}
-
-	if len(metrics) > 0 {
-		sb.WriteString("\nAvailable Metrics (name — description):\n")
-		for _, m := range metrics {
-			if m.Help != "" {
-				sb.WriteString(fmt.Sprintf("- %s — %s\n", m.Name, m.Help))
-			} else {
-				sb.WriteString(fmt.Sprintf("- %s\n", m.Name))
-			}
-		}
-	}
-
 	return sb.String()
 }
 
@@ -169,14 +167,14 @@ func buildUserMessage(history []ConversationTurn, question string) string {
 }
 
 // Query translates a natural-language question into a PromQL expression.
-func (c *Client) Query(ctx context.Context, question string, metrics []MetricHint, labels map[string][]string, history []ConversationTurn) (string, error) {
-	return c.query(ctx, buildSystemPrompt(metrics, labels), buildUserMessage(history, question))
+func (c *Client) Query(ctx context.Context, question string, labels map[string][]string, history []ConversationTurn) (string, error) {
+	return c.query(ctx, buildSystemPrompt(labels), buildUserMessage(history, question))
 }
 
 // Refine generates an alternative query when the previous one returned no data.
-func (c *Client) Refine(ctx context.Context, question, failedQuery string, metrics []MetricHint, labels map[string][]string, history []ConversationTurn) (string, error) {
-	system := buildSystemPrompt(metrics, labels) +
-		"\n\nThe query below returned no results. Generate a corrected query using only the available label values above." +
+func (c *Client) Refine(ctx context.Context, question, failedQuery string, labels map[string][]string, history []ConversationTurn) (string, error) {
+	system := buildSystemPrompt(labels) +
+		"\n\nThe query below returned no results. Generate a corrected query." +
 		"\nFailed query: " + failedQuery
 	return c.query(ctx, system, buildUserMessage(history, question))
 }
@@ -250,7 +248,7 @@ func (c *Client) rawQuery(ctx context.Context, system, userMsg string) (string, 
 func (c *Client) query(ctx context.Context, system, userMsg string) (string, error) {
 	body, _ := json.Marshal(bedrockRequest{
 		AnthropicVersion: "bedrock-2023-05-31",
-		MaxTokens:        300,
+		MaxTokens:        150,
 		System:           system,
 		Messages:         []message{{Role: "user", Content: userMsg}},
 	})

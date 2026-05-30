@@ -19,13 +19,12 @@ import (
 
 const (
 	metricsCacheTTL = 5 * time.Minute
-	maxHistory      = 6 // 3 back-and-forth turns per user
+	maxHistory      = 4 // 2 back-and-forth turns per user
 )
 
 var labelsToFetch = []string{"job", "instance", "service", "env", "team", "host"}
 
 type metricsCache struct {
-	hints  []claude.MetricHint
 	labels map[string][]string
 	expiry time.Time
 }
@@ -111,14 +110,14 @@ func (h *Handler) Handle(update tgbotapi.Update) {
 }
 
 func (h *Handler) answer(ctx context.Context, userID int64, question string) (string, error) {
-	hints, labels, err := h.getMetricsCache(ctx)
+	labels, err := h.getMetricsCache(ctx)
 	if err != nil {
-		log.Printf("cache refresh failed, proceeding without hints: %v", err)
+		log.Printf("cache refresh failed, proceeding without labels: %v", err)
 	}
 
 	history := h.getHistory(userID)
 
-	promql, err := h.claude.Query(ctx, question, hints, labels, history)
+	promql, err := h.claude.Query(ctx, question, labels, history)
 	if err != nil {
 		var clarErr *claude.ClarificationError
 		if errors.As(err, &clarErr) {
@@ -147,7 +146,7 @@ func (h *Handler) answer(ctx context.Context, userID int64, question string) (st
 
 	if result == "No data found." {
 		log.Printf("[prom] no data, asking claude to refine")
-		refined, rerr := h.claude.Refine(ctx, question, promql, hints, labels, history)
+		refined, rerr := h.claude.Refine(ctx, question, promql, labels, history)
 		if rerr == nil && refined != promql {
 			refined = ensureSumByLe(refined)
 			log.Printf("[claude] refined promql: %s", refined)
@@ -190,29 +189,14 @@ func (h *Handler) addHistory(userID int64, question, answer string) {
 	h.history[userID] = hist
 }
 
-// getMetricsCache returns cached metric hints and label values, refreshing when stale.
-func (h *Handler) getMetricsCache(ctx context.Context) ([]claude.MetricHint, map[string][]string, error) {
+// getMetricsCache returns cached label values, refreshing when stale.
+// Metric names are no longer fetched dynamically — a curated list is in the system prompt.
+func (h *Handler) getMetricsCache(ctx context.Context) (map[string][]string, error) {
 	h.cacheMu.Lock()
 	defer h.cacheMu.Unlock()
 
 	if time.Now().Before(h.cache.expiry) {
-		return h.cache.hints, h.cache.labels, nil
-	}
-
-	names, err := h.prom.ListMetricNames(ctx)
-	if err != nil {
-		return nil, nil, err
-	}
-	meta, _ := h.prom.GetMetricMetadata(ctx)
-
-	hints := make([]claude.MetricHint, 0, len(names))
-	for _, name := range names {
-		hint := claude.MetricHint{Name: name}
-		if m, ok := meta[name]; ok {
-			hint.Help = m.Help
-			hint.Type = m.Type
-		}
-		hints = append(hints, hint)
+		return h.cache.labels, nil
 	}
 
 	labelMap := make(map[string][]string)
@@ -222,10 +206,10 @@ func (h *Handler) getMetricsCache(ctx context.Context) ([]claude.MetricHint, map
 			labelMap[label] = vals
 		}
 	}
-	log.Printf("[cache] refreshed: %d metrics, labels: %v", len(hints), labelMap)
+	log.Printf("[cache] refreshed labels: %v", labelMap)
 
-	h.cache = metricsCache{hints: hints, labels: labelMap, expiry: time.Now().Add(metricsCacheTTL)}
-	return hints, labelMap, nil
+	h.cache = metricsCache{labels: labelMap, expiry: time.Now().Add(metricsCacheTTL)}
+	return labelMap, nil
 }
 
 // isMultiQuery detects when Claude returned multiple PromQL expressions joined by commas.
