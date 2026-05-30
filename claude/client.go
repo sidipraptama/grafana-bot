@@ -229,15 +229,35 @@ func (c *Client) query(ctx context.Context, system, userMsg string) (string, err
 	out = strings.TrimSuffix(out, "```")
 	out = strings.TrimSpace(out)
 
+	// Single-line: check if it's a clarification question before treating as PromQL.
 	if !strings.Contains(out, "\n") {
+		if isQuestion(out) {
+			return "", &ClarificationError{Message: out}
+		}
 		return out, nil
 	}
 
+	// Multi-line: try to extract a PromQL expression.
 	if promql := extractPromQL(out); promql != "" {
 		return promql, nil
 	}
 
 	return "", &ClarificationError{Message: out}
+}
+
+// isQuestion returns true if the text looks like a natural language question.
+func isQuestion(s string) bool {
+	if strings.HasSuffix(s, "?") {
+		return true
+	}
+	lower := strings.ToLower(s)
+	starters := []string{"which", "are you", "what ", "how ", "do you", "could you", "can you", "please clarify"}
+	for _, q := range starters {
+		if strings.HasPrefix(lower, q) {
+			return true
+		}
+	}
+	return false
 }
 
 // ClarificationError is returned when Claude asks a question instead of returning PromQL.

@@ -76,6 +76,14 @@ func (h *Handler) Handle(update tgbotapi.Update) {
 		return
 	}
 
+	// Handle /start and greetings directly without calling Claude.
+	if isGreeting(text) {
+		welcome := "Hi! 👋 I'm your infrastructure metrics assistant.\n\nAsk me anything about your servers, e.g:\n- Are the prod instances up?\n- What's the p99 latency right now?\n- Any downtime this week on the private instance?\n- How's the CPU on the public prod server?"
+		out := tgbotapi.NewMessage(msg.Chat.ID, welcome)
+		h.bot.Send(out)
+		return
+	}
+
 	log.Printf("[handler] received from %d (@%s): %q", msg.From.ID, msg.From.UserName, text)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -227,6 +235,17 @@ func ensureSumByLe(promql string) string {
 		return promql
 	}
 	return promql[:secondLast+1] + " by (le)" + promql[secondLast+1:]
+}
+
+func isGreeting(text string) bool {
+	lower := strings.ToLower(strings.TrimPrefix(text, "/"))
+	greetings := []string{"start", "hello", "hi", "hey", "help", "halo", "hei"}
+	for _, g := range greetings {
+		if lower == g || strings.HasPrefix(lower, g+" ") {
+			return true
+		}
+	}
+	return false
 }
 
 func stripHTML(s string) string {
