@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"html"
 	"log"
 	"strings"
 	"sync"
@@ -82,11 +83,11 @@ func (h *Handler) Handle(update tgbotapi.Update) {
 	log.Printf("[handler] replying to %d: %q", msg.From.ID, reply)
 
 	out := tgbotapi.NewMessage(msg.Chat.ID, reply)
-	out.ParseMode = "Markdown"
+	out.ParseMode = "HTML"
 	if _, sendErr := h.bot.Send(out); sendErr != nil {
-		// Retry without markdown in case of formatting issue
-		log.Printf("[handler] markdown send failed (%v), retrying as plain text", sendErr)
+		log.Printf("[handler] html send failed (%v), retrying as plain text", sendErr)
 		out.ParseMode = ""
+		out.Text = stripHTML(reply)
 		h.bot.Send(out)
 	}
 }
@@ -128,16 +129,26 @@ func (h *Handler) answer(ctx context.Context, question string) (string, error) {
 			}
 		}
 		if result == "No data found." {
-			return fmt.Sprintf("No data found for your question.\n_(tried: `%s`)_", promql), nil
+			return fmt.Sprintf("No data found for your question.\n\n<i>tried: <code>%s</code></i>", html.EscapeString(promql)), nil
 		}
 	}
 
 	friendly, ferr := h.claude.Format(ctx, question, result)
 	if ferr != nil {
 		log.Printf("[format] error: %v, falling back to raw", ferr)
-		return fmt.Sprintf("%s\n\n_(query: `%s`)_", result, promql), nil
+		return fmt.Sprintf("%s\n\n<i>query: <code>%s</code></i>", html.EscapeString(result), html.EscapeString(promql)), nil
 	}
-	return fmt.Sprintf("%s\n\n_(query: `%s`)_", friendly, promql), nil
+	return fmt.Sprintf("%s\n\n<i>query: <code>%s</code></i>", friendly, html.EscapeString(promql)), nil
+}
+
+func stripHTML(s string) string {
+	s = strings.ReplaceAll(s, "<b>", "")
+	s = strings.ReplaceAll(s, "</b>", "")
+	s = strings.ReplaceAll(s, "<i>", "")
+	s = strings.ReplaceAll(s, "</i>", "")
+	s = strings.ReplaceAll(s, "<code>", "")
+	s = strings.ReplaceAll(s, "</code>", "")
+	return html.UnescapeString(s)
 }
 
 func (h *Handler) getCache(ctx context.Context) ([]claude.MetricHint, map[string][]string, error) {

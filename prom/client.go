@@ -99,9 +99,10 @@ func (c *Client) Query(ctx context.Context, query string) (string, error) {
 	var sb strings.Builder
 	for i, r := range valid {
 		if len(valid) > 1 {
-			label := r.metric["instance"]
-			if label == "" {
-				label = r.metric["job"]
+			// Prefer job > instance for human-readable multi-series display
+			label := r.metric["job"]
+			if instance := r.metric["instance"]; instance != "" {
+				label = fmt.Sprintf("%s (%s)", label, instance)
 			}
 			if label == "" {
 				label = fmt.Sprintf("series %d", i+1)

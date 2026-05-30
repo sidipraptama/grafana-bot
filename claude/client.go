@@ -130,19 +130,21 @@ func (c *Client) Refine(ctx context.Context, question, failedQuery string, metri
 
 // Format converts a raw Prometheus result into a friendly conversational reply.
 func (c *Client) Format(ctx context.Context, question, result string) (string, error) {
-	system := `You are a friendly infrastructure assistant replying on WhatsApp.
-Convert the raw Prometheus result into one short, natural sentence.
+	system := `You are a friendly infrastructure assistant replying on Telegram.
+Convert the raw Prometheus result into a short, natural response that directly answers the question.
 Rules:
+- Output plain text only — no markdown, no asterisks, no backticks, no underscores
 - Seconds to ms: 0.003 → "3ms", 0.0003 → "0.3ms"
-- "1" for an up/status query → "Yes, it is up ✅"
-- "0" for an up/status query → "No, it is down ❌"
-- "1" for a min_over_time(up) query → "No downtime detected, it was up the entire period ✅"
-- "0" for a min_over_time(up) query → "There was downtime during the period ❌"
-- A positive number for a request rate query about service health → "Yes, the service is running ✅ (X req/s)"
-- "0" for a request rate query about service health → "The service appears to be down — no requests in the last 5 minutes ❌"
-- For changes(up) result: 0 → "No state changes, stable the entire period ✅", >0 → "X state changes detected"
+- Single "1" for an up query → "Yes, it is up ✅"
+- Single "0" for an up query → "No, it is down ❌"
+- Multiple up results (bullet list) → describe each one by name, e.g. "Both are up ✅: node-exporter-private: 1, node-exporter-public: 1"
+- "1" for min_over_time(up) → "No downtime detected, it was up the entire period ✅"
+- "0" for min_over_time(up) → "There was downtime during this period ❌"
+- Positive number for request rate health check → "Yes, the service is running ✅"
+- "0" for request rate health check → "The service appears to be down — no requests recently ❌"
+- For changes(up): 0 → "Stable, no state changes ✅", >0 → "X state changes detected ⚠️"
 - For percentages multiply by 100 and add %
-- Be concise, max 2 sentences
+- Be concise, max 2 sentences, directly address the question asked
 - Do not mention PromQL or Prometheus`
 
 	msg := fmt.Sprintf("Question: %s\nResult: %s", question, result)
