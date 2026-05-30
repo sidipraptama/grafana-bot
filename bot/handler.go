@@ -17,11 +17,14 @@ import (
 	"whatsapp-bot/prom"
 )
 
-const metricsCacheTTL = 5 * time.Minute
+const (
+	metricsCacheTTL = 5 * time.Minute
+	maxHistory      = 6 // 3 back-and-forth turns per user
+)
 
 var labelsToFetch = []string{"job", "instance", "service", "env", "team"}
 
-type cache struct {
+type metricsCache struct {
 	hints  []claude.MetricHint
 	labels map[string][]string
 	expiry time.Time
@@ -33,8 +36,11 @@ type Handler struct {
 	prom         *prom.Client
 	allowedUsers map[int64]bool
 
-	mu    sync.Mutex
-	cache cache
+	cacheMu sync.Mutex
+	cache   metricsCache
+
+	histMu  sync.Mutex
+	history map[int64][]claude.ConversationTurn
 }
 
 func NewHandler(bot *tgbotapi.BotAPI, cfg *config.Config) *Handler {
@@ -43,6 +49,7 @@ func NewHandler(bot *tgbotapi.BotAPI, cfg *config.Config) *Handler {
 		claude:       claude.New(cfg.ClaudeEndpoint, cfg.ClaudeModel, cfg.ClaudeToken),
 		prom:         prom.New(cfg.PrometheusURL),
 		allowedUsers: cfg.AllowedUsers,
+		history:      make(map[int64][]claude.ConversationTurn),
 	}
 }
 
@@ -74,13 +81,16 @@ func (h *Handler) Handle(update tgbotapi.Update) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	reply, err := h.answer(ctx, text)
+	reply, err := h.answer(ctx, msg.From.ID, text)
 	if err != nil {
 		log.Printf("[handler] answer error: %v", err)
 		reply = "Sorry, something went wrong. Please try again."
 	}
 
 	log.Printf("[handler] replying to %d: %q", msg.From.ID, reply)
+
+	// Store the turn in history (strip HTML tags for clean context in future prompts)
+	h.addHistory(msg.From.ID, text, stripHTML(reply))
 
 	out := tgbotapi.NewMessage(msg.Chat.ID, reply)
 	out.ParseMode = "HTML"
@@ -92,17 +102,19 @@ func (h *Handler) Handle(update tgbotapi.Update) {
 	}
 }
 
-func (h *Handler) answer(ctx context.Context, question string) (string, error) {
-	hints, labels, err := h.getCache(ctx)
+func (h *Handler) answer(ctx context.Context, userID int64, question string) (string, error) {
+	hints, labels, err := h.getMetricsCache(ctx)
 	if err != nil {
 		log.Printf("cache refresh failed, proceeding without hints: %v", err)
 	}
 
-	promql, err := h.claude.Query(ctx, question, hints, labels)
+	history := h.getHistory(userID)
+
+	promql, err := h.claude.Query(ctx, question, hints, labels, history)
 	if err != nil {
 		var clarErr *claude.ClarificationError
 		if errors.As(err, &clarErr) {
-			log.Printf("[claude] clarification needed: %s", clarErr.Message)
+			log.Printf("[claude] asking clarification: %s", clarErr.Message)
 			return clarErr.Message, nil
 		}
 		return "", fmt.Errorf("claude: %w", err)
@@ -119,7 +131,7 @@ func (h *Handler) answer(ctx context.Context, question string) (string, error) {
 
 	if result == "No data found." {
 		log.Printf("[prom] no data, asking claude to refine")
-		refined, rerr := h.claude.Refine(ctx, question, promql, hints, labels)
+		refined, rerr := h.claude.Refine(ctx, question, promql, hints, labels, history)
 		if rerr == nil && refined != promql {
 			refined = ensureSumByLe(refined)
 			log.Printf("[claude] refined promql: %s", refined)
@@ -141,19 +153,31 @@ func (h *Handler) answer(ctx context.Context, question string) (string, error) {
 	return fmt.Sprintf("%s\n\n<i>query: <code>%s</code></i>", friendly, html.EscapeString(promql)), nil
 }
 
-func stripHTML(s string) string {
-	s = strings.ReplaceAll(s, "<b>", "")
-	s = strings.ReplaceAll(s, "</b>", "")
-	s = strings.ReplaceAll(s, "<i>", "")
-	s = strings.ReplaceAll(s, "</i>", "")
-	s = strings.ReplaceAll(s, "<code>", "")
-	s = strings.ReplaceAll(s, "</code>", "")
-	return html.UnescapeString(s)
+// getHistory returns a copy of the conversation history for a user.
+func (h *Handler) getHistory(userID int64) []claude.ConversationTurn {
+	h.histMu.Lock()
+	defer h.histMu.Unlock()
+	src := h.history[userID]
+	out := make([]claude.ConversationTurn, len(src))
+	copy(out, src)
+	return out
 }
 
-func (h *Handler) getCache(ctx context.Context) ([]claude.MetricHint, map[string][]string, error) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
+// addHistory appends a turn and trims to maxHistory entries.
+func (h *Handler) addHistory(userID int64, question, answer string) {
+	h.histMu.Lock()
+	defer h.histMu.Unlock()
+	hist := append(h.history[userID], claude.ConversationTurn{Question: question, Answer: answer})
+	if len(hist) > maxHistory {
+		hist = hist[len(hist)-maxHistory:]
+	}
+	h.history[userID] = hist
+}
+
+// getMetricsCache returns cached metric hints and label values, refreshing when stale.
+func (h *Handler) getMetricsCache(ctx context.Context) ([]claude.MetricHint, map[string][]string, error) {
+	h.cacheMu.Lock()
+	defer h.cacheMu.Unlock()
 
 	if time.Now().Before(h.cache.expiry) {
 		return h.cache.hints, h.cache.labels, nil
@@ -184,12 +208,11 @@ func (h *Handler) getCache(ctx context.Context) ([]claude.MetricHint, map[string
 	}
 	log.Printf("[cache] refreshed: %d metrics, labels: %v", len(hints), labelMap)
 
-	h.cache = cache{hints: hints, labels: labelMap, expiry: time.Now().Add(metricsCacheTTL)}
+	h.cache = metricsCache{hints: hints, labels: labelMap, expiry: time.Now().Add(metricsCacheTTL)}
 	return hints, labelMap, nil
 }
 
-// ensureSumByLe rewrites histogram_quantile queries missing sum() by (le)
-// so they always return a single aggregated series.
+// ensureSumByLe rewrites histogram_quantile queries missing sum() by (le).
 func ensureSumByLe(promql string) string {
 	if !strings.Contains(promql, "histogram_quantile") || strings.Contains(promql, "sum(") {
 		return promql
@@ -204,4 +227,14 @@ func ensureSumByLe(promql string) string {
 		return promql
 	}
 	return promql[:secondLast+1] + " by (le)" + promql[secondLast+1:]
+}
+
+func stripHTML(s string) string {
+	s = strings.ReplaceAll(s, "<b>", "")
+	s = strings.ReplaceAll(s, "</b>", "")
+	s = strings.ReplaceAll(s, "<i>", "")
+	s = strings.ReplaceAll(s, "</i>", "")
+	s = strings.ReplaceAll(s, "<code>", "")
+	s = strings.ReplaceAll(s, "</code>", "")
+	return html.UnescapeString(s)
 }
