@@ -89,7 +89,9 @@ Job context:
     Disk:    (1 - node_filesystem_avail_bytes{host="ip-172-31-162-139",team="group4",mountpoint="/"} / node_filesystem_size_bytes{host="ip-172-31-162-139",team="group4",mountpoint="/"}) * 100
     Disk IO: rate(node_disk_read_bytes_total{host="ip-172-31-162-139",team="group4"}[5m])
 - "app/service/HTTP/latency/p50/p95/p99" → job="url-shortener" with http_server_request_duration_seconds_bucket
-- "is the app/service up/running?" → url-shortener has NO up metric (OTLP push). Use count(http_server_request_duration_seconds_count{job="url-shortener",team="group4"}) — if result > 0 the service is alive and pushing metrics; if no data it is down
+- "is the app/service up?" / "is the prod app up?" → check the server running the app using up{job="node-exporter-public",team="group4",env="prod"}
+- "is the staging app up?" → up{job="node-exporter-public",team="group4",env="staging"}
+- Always include env= when user mentions prod or staging in an up query
 - "postgres/database/db"              → job="postgresql"
 - "redis/cache"                       → job="redis"
 - "rabbitmq/queue"                    → job="rabbitmq"
