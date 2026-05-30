@@ -81,7 +81,12 @@ Job context:
 - "private instance/server/EC2"       → job="node-exporter-private"
 - "public instance/server/EC2"        → job="node-exporter-public"
 - "both instances" / "all instances"  → job=~"node-exporter-private|node-exporter-public"
-- "grafana instance/server" / "infra" / "monitoring server" → job="node-exporter", service="grafana-infra" (the Grafana monitoring server)
+- "grafana instance/server" / "infra server" / "monitoring server" → use host="ip-172-31-162-139", team="group4" (no job filter). Exact query patterns:
+    Status:  up{host="ip-172-31-162-139",team="group4"}
+    CPU:     100 - (avg(rate(node_cpu_seconds_total{mode="idle",host="ip-172-31-162-139",team="group4"}[5m])) * 100)
+    Memory:  (1 - node_memory_MemAvailable_bytes{host="ip-172-31-162-139",team="group4"} / node_memory_MemTotal_bytes{host="ip-172-31-162-139",team="group4"}) * 100
+    Disk:    (1 - node_filesystem_avail_bytes{host="ip-172-31-162-139",team="group4",mountpoint="/"} / node_filesystem_size_bytes{host="ip-172-31-162-139",team="group4",mountpoint="/"}) * 100
+    Disk IO: rate(node_disk_read_bytes_total{host="ip-172-31-162-139",team="group4"}[5m])
 - "app/service/HTTP/latency/p50/p95/p99" → job="url-shortener" with http_server_request_duration_seconds_bucket
 - "is the app/service up/running?" → url-shortener has NO up metric; use rate(http_server_request_duration_seconds_count{job="url-shortener",team="group4"}[5m])
 - "postgres/database/db"              → job="postgresql"

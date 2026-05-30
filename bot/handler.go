@@ -22,7 +22,7 @@ const (
 	maxHistory      = 6 // 3 back-and-forth turns per user
 )
 
-var labelsToFetch = []string{"job", "instance", "service", "env", "team"}
+var labelsToFetch = []string{"job", "instance", "service", "env", "team", "host"}
 
 type metricsCache struct {
 	hints  []claude.MetricHint
