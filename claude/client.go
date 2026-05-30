@@ -89,7 +89,7 @@ Job context:
     Disk:    (1 - node_filesystem_avail_bytes{host="ip-172-31-162-139",team="group4",mountpoint="/"} / node_filesystem_size_bytes{host="ip-172-31-162-139",team="group4",mountpoint="/"}) * 100
     Disk IO: rate(node_disk_read_bytes_total{host="ip-172-31-162-139",team="group4"}[5m])
 - "app/service/HTTP/latency/p50/p95/p99" → job="url-shortener" with http_server_request_duration_seconds_bucket
-- "is the app/service up/running?" → url-shortener has NO up metric; use rate(http_server_request_duration_seconds_count{job="url-shortener",team="group4"}[5m])
+- "is the app/service up/running?" → url-shortener has NO up metric (OTLP push). Use count(http_server_request_duration_seconds_count{job="url-shortener",team="group4"}) — if result > 0 the service is alive and pushing metrics; if no data it is down
 - "postgres/database/db"              → job="postgresql"
 - "redis/cache"                       → job="redis"
 - "rabbitmq/queue"                    → job="rabbitmq"
@@ -193,8 +193,10 @@ Rules:
 - Single "1" for an up/min_over_time(up) query → "Yes, it is up ✅" / "No downtime detected ✅"
 - Single "0" for an up/min_over_time(up) query → "No, it is down ❌" / "There was downtime ❌"
 - Multiple up results → list each by job name with its status
-- Positive number for request rate health → "Yes, the service is running ✅"
-- "0" for request rate health → "The service appears to be down ❌"
+- Positive number for request rate (rate(...)) → "The service is active, receiving traffic ✅"
+- "0" for request rate (rate(...)) → "No requests in the last 5 minutes — service may be idle or down ⚠️" (do NOT say definitively down)
+- Positive number for count() query → "The service is alive and pushing metrics ✅"
+- "0" or no data for count() query → "The service does not appear to be pushing any metrics ❌"
 - For changes(up): 0 → "Stable, no state changes ✅", >0 → "X state changes detected ⚠️"
 - For CPU percentage: result is already a ratio, multiply by 100 and add %
 - Be concise (max 2 sentences), directly answer the question
